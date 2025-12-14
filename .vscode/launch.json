@@ -1,0 +1,43 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "(gdb) launch",
+            "type": "cppdbg",
+            "request": "launch",
+            
+            // 调试哪个可执行文件
+            // "program": "${workspaceFolder}/build/demo/llama_infer",
+            "program": "${workspaceFolder}/build/test/test_llm",
+            
+            // 可执行文件的命令行参数，如需要可添加
+            // "args": [
+            //     "${workspaceFolder}/models/stories110M.bin",
+            //     "${workspaceFolder}/models/tokenizer.model",
+            // ],
+            "args": [],
+
+            // 是否在main函数入口暂停
+            "stopAtEntry": false,
+            // 工作目录，根据需要调整
+            "cwd": "${workspaceFolder}",
+            // 环境变量，例如 [{"name": "LD_LIBRARY_PATH", "value": "/usr/local/lib"}]
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb (为 gdb 启用整齐打印)",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Set Disassembly Flavor to Intel",
+                    "text": "set disassembly-flavor intel",
+                    "ignoreFailures": true
+                }
+            ],
+        }
+    ]
+}
