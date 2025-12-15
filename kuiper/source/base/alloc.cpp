@@ -4,15 +4,15 @@
 namespace base {
 
 void DeviceAllocator::memcpy(
-    const void* src_ptr,      // 源地址指针
     void* dest_ptr,           // 目标地址指针
+    const void* src_ptr,      // 源地址指针
     size_t byte_size,         // 拷贝字节数
     MemcpyKind memcpy_kind,   // 拷贝类型枚举
     void* stream,             // CUDA 流（用于异步操作）
     bool need_sync            // 是否需要同步等待
 ) const {
-    CHECK_NE(src_ptr, nullptr);
     CHECK_NE(dest_ptr, nullptr);
+    CHECK_NE(src_ptr, nullptr);
 
     if (!byte_size) {
         return;
@@ -28,19 +28,19 @@ void DeviceAllocator::memcpy(
     if (memcpy_kind == MemcpyKind::MemcpyCPU2CPU) {
         std::memcpy(dest_ptr, src_ptr, byte_size);
     } else if (memcpy_kind == MemcpyKind::MemcpyCPU2CUDA) {
-        if (!stream) { // 同步版本：阻塞直到拷贝完成
+        if (!stream_) { // 同步版本：阻塞直到拷贝完成
             cudaMemcpy(dest_ptr, src_ptr, byte_size, cudaMemcpyHostToDevice);
         } else { // 异步版本：立即返回，拷贝在流中执行
             cudaMemcpyAsync(dest_ptr, src_ptr, byte_size, cudaMemcpyHostToDevice, stream_);
         }
     } else if (memcpy_kind == MemcpyKind::MemcpyCUDA2CPU) {
-        if (!stream) {
+        if (!stream_) {
             cudaMemcpy(dest_ptr, src_ptr, byte_size, cudaMemcpyDeviceToHost);
         } else {
             cudaMemcpyAsync(dest_ptr, src_ptr, byte_size, cudaMemcpyDeviceToHost, stream_);
         }
     } else if (memcpy_kind == MemcpyKind::MemcpyCUDA2CUDA) {
-        if (!stream) {
+        if (!stream_) {
             cudaMemcpy(dest_ptr, src_ptr, byte_size, cudaMemcpyDeviceToDevice);
         } else {
             cudaMemcpyAsync(dest_ptr, src_ptr, byte_size, cudaMemcpyDeviceToDevice, stream_);

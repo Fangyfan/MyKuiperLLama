@@ -1,8 +1,8 @@
-#ifndef KUIPER_INCLUDE_BASE_ALLOC_H_
-#define KUIPER_INCLUDE_BASE_ALLOC_H_
+#ifndef KUIPER_INCLUDE_BASE_ALLOC_H
+#define KUIPER_INCLUDE_BASE_ALLOC_H
 
 #include <memory>
-#include "base.h"
+#include "base/base.h"
 
 namespace base {
 enum class MemcpyKind {
@@ -15,17 +15,12 @@ enum class MemcpyKind {
 class DeviceAllocator {
 public:
     explicit DeviceAllocator(DeviceType device_type) : device_type_(device_type) {}
-    virtual DeviceType device_type() const {
-        return device_type_;
-    }
+    virtual DeviceType device_type() const { return device_type_; }
     virtual void* allocate(size_t byte_size) const = 0;
     virtual void release(void* ptr) const = 0;
-    virtual void memcpy(const void* src_ptr, void* dest_ptr, size_t byte_size,
-                        MemcpyKind memcpy_kind = MemcpyKind::MemcpyCPU2CPU,
-                        void* stream = nullptr,
-                        bool need_sync = false) const;
-    virtual void memset_zero(void* ptr, size_t byte_size, void* stream,
-                        bool need_sync = false);
+    virtual void memcpy(void* dest_ptr, const void* src_ptr, size_t byte_size, MemcpyKind memcpy_kind = MemcpyKind::MemcpyCPU2CPU,
+                        void* stream = nullptr, bool need_sync = false) const;
+    virtual void memset_zero(void* ptr, size_t byte_size, void* stream, bool need_sync = false);
 private:
     DeviceType device_type_ = DeviceType::DeviceUnkown;
 };
@@ -69,4 +64,4 @@ private:
 };
 }  // namespace base
 
-#endif  // KUIPER_INCLUDE_BASE_ALLOC_H_
+#endif  // KUIPER_INCLUDE_BASE_ALLOC_H

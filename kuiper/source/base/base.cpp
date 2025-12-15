@@ -3,7 +3,7 @@
 
 namespace base {
 
-Status::Status(int code, std::string err_msg) : code_(code), err_msg_(std::move(err_msg)) {}
+Status::Status(int code, std::string err_msg) : code_(code), err_msg_(err_msg) {}
 
 Status& Status::operator=(int code) {
     code_ = code;

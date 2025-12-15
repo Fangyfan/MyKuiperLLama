@@ -13,7 +13,9 @@ void* CPUDeviceAllocator::allocate(size_t byte_size) const {
 }
 
 void CPUDeviceAllocator::release(void* ptr) const {
-    if (ptr == nullptr) return;
+    if (ptr == nullptr) {
+        return;
+    }
     free(ptr);
 }
 
