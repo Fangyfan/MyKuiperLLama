@@ -53,7 +53,7 @@ enum class ModelType : uint8_t {
     ModelTypeLLama2 = 1,
 };
 
-inline size_t DataTypeSize(DataType data_type) {
+inline size_t data_type_size(DataType data_type) {
     if (data_type == DataType::DataTypeFp32) {
         return sizeof(float);
     } else if (data_type == DataType::DataTypeInt8) {
@@ -61,6 +61,7 @@ inline size_t DataTypeSize(DataType data_type) {
     } else if (data_type == DataType::DataTypeInt32) {
         return sizeof(int32_t);
     } else {
+        LOG(FATAL) << "Unknown data type size for " << int(data_type);
         return 0;
     }
 }

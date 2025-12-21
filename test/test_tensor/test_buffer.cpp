@@ -76,7 +76,7 @@ TEST(test_buffer, cuda_memory2) {
     ASSERT_EQ(buffer_cu1.device_type(), DeviceType::DeviceCUDA);
     ASSERT_EQ(buffer_cu2.device_type(), DeviceType::DeviceCUDA);
 
-    set_value_cu(static_cast<float*>(buffer_cu1.ptr()), size);
+    set_value_cu(static_cast<float*>(buffer_cu1.ptr()), size, 1.f);
 
     buffer_cu2.copy_from(buffer_cu1);
 
@@ -101,7 +101,7 @@ TEST(test_buffer, cuda_memory3) {
     ASSERT_EQ(buffer_cu.device_type(), DeviceType::DeviceCUDA);
     ASSERT_EQ(buffer.device_type(), DeviceType::DeviceCPU);
 
-    set_value_cu(static_cast<float*>(buffer_cu.ptr()), size);
+    set_value_cu(static_cast<float*>(buffer_cu.ptr()), size, 1.f);
 
     buffer.copy_from(buffer_cu);
 
