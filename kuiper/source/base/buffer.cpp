@@ -36,7 +36,7 @@ void Buffer::copy_from(const Buffer& buffer) const {
     
     DeviceType dest_device = device_type_;
     DeviceType src_device = buffer.device_type_;
-    CHECK(src_device != DeviceType::DeviceUnkown && dest_device != DeviceType::DeviceUnkown);
+    CHECK(src_device != DeviceType::DeviceUnknown && dest_device != DeviceType::DeviceUnknown);
 
     if (src_device == DeviceType::DeviceCPU && dest_device == DeviceType::DeviceCPU) {
         allocator_->memcpy(ptr_, buffer.ptr_, copy_size, MemcpyKind::MemcpyCPU2CPU);
@@ -57,7 +57,7 @@ void Buffer::copy_from(const Buffer* buffer) const {
     
     DeviceType dest_device = device_type_;
     DeviceType src_device = buffer->device_type_;
-    CHECK(src_device != DeviceType::DeviceUnkown && dest_device != DeviceType::DeviceUnkown);
+    CHECK(src_device != DeviceType::DeviceUnknown && dest_device != DeviceType::DeviceUnknown);
 
     if (src_device == DeviceType::DeviceCPU && dest_device == DeviceType::DeviceCPU) {
         allocator_->memcpy(ptr_, buffer->ptr_, copy_size, MemcpyKind::MemcpyCPU2CPU);

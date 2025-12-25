@@ -3,7 +3,7 @@
 
 __global__ void test_function_cu(float* arr_cu, int32_t size, float value) {
     // 计算全局线程索引
-    int32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
+    int32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     // 边界检查：确保不越界
     if (tid >= size) {
         return;

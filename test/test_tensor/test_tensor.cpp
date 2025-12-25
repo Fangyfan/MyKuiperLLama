@@ -258,7 +258,7 @@ TEST(test_tensor, assign) {
     }
 
     auto buffer = std::make_shared<base::Buffer>(size * sizeof(float), nullptr, ptr, true);
-    buffer->set_device_type(DeviceType::DeviceCPU);
+    buffer->set_device_type(DeviceType::DeviceCPU); // 当没有 allocator 来构造 buffer 时，需要手动设置 device_type
 
     ASSERT_EQ(t_cpu.assgin(buffer), true);
     ASSERT_EQ(t_cpu.is_empty(), false);

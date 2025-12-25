@@ -1,0 +1,15 @@
+#ifndef KERNEL_INTERFACE_H
+#define KERNEL_INTERFACE_H
+
+#include "tensor/tensor.h"
+
+namespace kernel {
+// 函数指针类型的别名定义
+// 用 typedef / using 定义了一个名为 XXX Kernel (比如 AddKernel) 的函数指针类型
+// typedef void (*AddKernel)(const tensor::Tensor& input1, const tensor::Tensor& input2, const tensor::Tensor& output, void* stream);
+using AddKernel = void (*)(const tensor::Tensor& input1, const tensor::Tensor& input2, const tensor::Tensor& output, void* stream);
+AddKernel get_add_kernel(base::DeviceType device_type);
+
+}  // namespace kernel
+
+#endif  // KERNEL_INTERFACE_H

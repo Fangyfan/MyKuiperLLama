@@ -6,10 +6,7 @@
 #include <string>
 
 // UNUSED 宏：显式标记未使用的参数，消除编译器警告
-#define UNUSED(expr)    \
-    do {                \
-        (void)(expr);   \
-    } while (0)
+#define UNUSED(expr) do { (void)(expr); } while (0)
 
 namespace model {
 enum class ModelBufferType {
@@ -36,7 +33,7 @@ enum class ModelBufferType {
 
 namespace base {
 enum class DeviceType : uint8_t {
-    DeviceUnkown = 0,
+    DeviceUnknown = 0,
     DeviceCPU = 1,
     DeviceCUDA = 2,
 };

@@ -22,7 +22,7 @@ public:
                         void* stream = nullptr, bool need_sync = false) const;
     virtual void memset_zero(void* ptr, size_t byte_size, void* stream, bool need_sync = false);
 private:
-    DeviceType device_type_ = DeviceType::DeviceUnkown;
+    DeviceType device_type_ = DeviceType::DeviceUnknown;
 };
 
 class CPUDeviceAllocator : public DeviceAllocator {

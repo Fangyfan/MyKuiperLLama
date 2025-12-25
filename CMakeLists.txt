@@ -78,11 +78,11 @@ aux_source_directory(kuiper/source/op/ DIR_OP)
 # 模型相关源文件
 aux_source_directory(kuiper/source/model/ DIR_MODEL)
 # CPU内核源文件
-aux_source_directory(kuiper/source/op/kernels/cpu DIR_KERNEL_CPU)
+aux_source_directory(kuiper/source/op/kernel/cpu DIR_KERNEL_CPU)
 # CUDA内核源文件
-aux_source_directory(kuiper/source/op/kernels/cuda DIR_KERNEL_CUDA)
+aux_source_directory(kuiper/source/op/kernel/cuda DIR_KERNEL_CUDA)
 # 通用内核源文件
-aux_source_directory(kuiper/source/op/kernels/ DIR_KERNEL)
+aux_source_directory(kuiper/source/op/kernel/ DIR_KERNEL)
 # 采样器源文件
 aux_source_directory(kuiper/source/sampler DIR_SAMPLE)
 

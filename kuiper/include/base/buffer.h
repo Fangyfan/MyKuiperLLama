@@ -39,7 +39,7 @@ private:
     // 是否拥有这块数据所有权（即是否使用外部数据，不对其释放）
     bool use_external_ = false;
     // Buffer 中内存资源所属的设备类型
-    DeviceType device_type_ = DeviceType::DeviceUnkown;
+    DeviceType device_type_ = DeviceType::DeviceUnknown;
     // Buffer 对应设备类型的内存分配器，负责资源的释放、申请以及拷贝等，既可以是 cpu allocator 也可以是 cuda allocator
     std::shared_ptr<DeviceAllocator> allocator_;
 };
