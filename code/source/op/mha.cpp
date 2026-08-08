@@ -4,7 +4,7 @@
 namespace op {
 MultiHeadAttention::MultiHeadAttention(base::DeviceType device_type, int32_t kv_dim, int32_t kv_mul, int32_t head_num, int32_t head_dim, int32_t max_seq_len)
 : Layer(device_type, LayerType::LayerMHA, "MHA"), kv_dim_(kv_dim), kv_mul_(kv_mul), head_num_(head_num), head_dim_(head_dim), max_seq_len_(max_seq_len) {
-    reset_inputs_size(4);
+    reset_inputs_size(5);
     reset_outputs_size(1);
 }
 
@@ -25,9 +25,16 @@ base::Status MultiHeadAttention::check() const {
         LOG(ERROR) << "The input value_cache tensor error in the matmul layer." << std::endl;
         return status;
     }
-    status = check_tensor_with_dim(get_input(3), device_type_, base::DataType::DataTypeFp32, head_num_, 4 * max_seq_len_);
+    // kv_split_output 每 head 按最大 split 数 (max_seq_len / 32) 预留，每个 split 存 head_dim + 2 (value sum 与 max)
+    status = check_tensor_with_dim(
+        get_input(3), device_type_, base::DataType::DataTypeFp32, head_num_, (max_seq_len_ / 32) * (head_dim_ + 2));
     if (!status) {
         LOG(ERROR) << "The input kv_split_output tensor error in the matmul layer." << std::endl;
+        return status;
+    }
+    status = check_tensor_with_dim(get_input(4), device_type_, base::DataType::DataTypeInt32, 1);
+    if (!status) {
+        LOG(ERROR) << "The input token pos tensor error in the mha layer." << std::endl;
         return status;
     }
     status = check_tensor_with_dim(get_output(0), device_type_, data_type_, head_num_ * head_dim_);
@@ -47,12 +54,13 @@ base::Status MultiHeadAttention::forward() {
     const tensor::Tensor& key_cache = get_input(1);
     const tensor::Tensor& value_cache = get_input(2);
     const tensor::Tensor& kv_split_output = get_input(3);
+    const tensor::Tensor& token_pos = get_input(4);
     const tensor::Tensor& output = get_output(0);
     if (device_type_ == base::DeviceType::DeviceCUDA) {
         CHECK_NE(cuda_config_, nullptr);
     }
-    kernel::get_mha_kernel(device_type_)(query, key_cache, value_cache, kv_split_output, output, 
-                                         layer_id_, pos_, kv_dim_, kv_mul_, head_num_, head_dim_, max_seq_len_, 
+    kernel::get_mha_kernel(device_type_)(query, key_cache, value_cache, kv_split_output, token_pos, output,
+                                         layer_id_, pos_, kv_dim_, kv_mul_, head_num_, head_dim_, max_seq_len_,
                                          cuda_config_ ? cuda_config_->stream : nullptr);
     return base::error::success();
 }

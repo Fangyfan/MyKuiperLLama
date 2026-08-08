@@ -96,6 +96,18 @@ base::Status Qwen3Model::init(base::DeviceType device_type) {
 }
 
 base::Status Qwen3Model::predict(const tensor::Tensor& token_embedding, const tensor::Tensor& token_pos, bool is_prompt, int32_t& next_token_id) const {
+    // eager 路径: 先把 pos 拷贝到 device，kernel 统一从 device 读 pos（与 CUDA Graph 路径行为一致）
+    if (device_type_ == base::DeviceType::DeviceCUDA) {
+        const tensor::Tensor& token_pos_cu = get_buffer(ModelBufferType::TokenPositionCu);
+        base::CUDADeviceAllocatorFactory::get_instance()->memcpy(
+            const_cast<int32_t*>(token_pos_cu.ptr<int32_t>()),
+            token_pos.ptr<int32_t>(),
+            sizeof(int32_t),
+            base::MemcpyKind::MemcpyCPU2CUDA,
+            cuda_config_ ? cuda_config_->stream : nullptr,
+            true
+        );
+    }
     base::Status status = forward(token_embedding, token_pos);
     if (!status) {
         return status;
@@ -387,6 +399,12 @@ void Qwen3Model::allocate_model_buffers() {
     insert_buffer(ModelBufferType::TokenIds, token_ids);
     insert_buffer(ModelBufferType::TokenPosition, token_pos);
 
+    // device 上的 token pos，kernel 直接读取 (CUDA Graph 兼容)
+    if (device_type_ == base::DeviceType::DeviceCUDA) {
+        tensor::Tensor token_pos_cu(base::DataType::DataTypeInt32, 1, true, allocator_cu);
+        insert_buffer(ModelBufferType::TokenPositionCu, token_pos_cu);
+    }
+
     tensor::Tensor token_embeddings(base::DataType::DataTypeBf16, 1, hidden_dim, true, allocator);
     insert_buffer(ModelBufferType::TokenEmbeddings, token_embeddings);
 
@@ -408,7 +426,8 @@ void Qwen3Model::allocate_model_buffers() {
     tensor::Tensor query(base::DataType::DataTypeBf16, dim, true, allocator);
     insert_buffer(ModelBufferType::Query, query);
 
-    tensor::Tensor kv_split_output(base::DataType::DataTypeFp32, head_num, 4 * max_seq_len, true, allocator);
+    // 每个 head 按最大 split 数量 (max_seq_len / 32) 预留，每个 split 存 head_dim + 2 (value sum 与 max)
+    tensor::Tensor kv_split_output(base::DataType::DataTypeFp32, head_num, (max_seq_len / 32) * (head_dim + 2), true, allocator);
     insert_buffer(ModelBufferType::KVSplitOutput, kv_split_output);
 
     tensor::Tensor mha_out(base::DataType::DataTypeBf16, dim, true, allocator);
@@ -490,7 +509,10 @@ void Qwen3Model::attention_mha(int32_t layer_id, const tensor::Tensor& token_pos
     const tensor::Tensor& query = get_buffer(ModelBufferType::Query);
     const tensor::Tensor& kv_split_output = get_buffer(ModelBufferType::KVSplitOutput);
     const tensor::Tensor& output = get_buffer(ModelBufferType::MHAOutput);
-    STATUS_CHECK(qwen3_layers_->mha_layer_->forward(query, key_cache, value_cache, kv_split_output, output));
+    // device 上的 pos: CUDA kernel 从 device 读 pos (CUDA Graph 兼容)，CPU 直接用 host pos tensor
+    const tensor::Tensor& pos_dev = (device_type_ == base::DeviceType::DeviceCUDA) ?
+        get_buffer(ModelBufferType::TokenPositionCu) : token_pos;
+    STATUS_CHECK(qwen3_layers_->mha_layer_->forward(query, key_cache, value_cache, kv_split_output, pos_dev, output));
 
     // 4. 输出投影: 计算出的结果再经过一个 wo (Output Weight) 线性层
     const auto& wo_layer = qwen3_layers_->wo_layers_.at(layer_id);
@@ -542,11 +564,13 @@ int32_t Qwen3Model::post_process(bool is_prompt) const {
     const tensor::Tensor& argmax_token = get_buffer(ModelBufferType::ArgmaxToken);
     const tensor::Tensor& argmax_buffer = get_buffer(ModelBufferType::ArgmaxBuffer);
     CHECK_EQ(logits.size(), config_->vocab_size);
+    int output_cpu = 0;
     int32_t next_token_id = sampler_->sample(
         logits.ptr<float>(), 
         logits.size(), 
         const_cast<int32_t*>(argmax_token.ptr<int32_t>()), 
         const_cast<void*>(argmax_buffer.ptr<void>()), 
+        &output_cpu, 
         cuda_config_ ? cuda_config_->stream : nullptr
     );
     return next_token_id;

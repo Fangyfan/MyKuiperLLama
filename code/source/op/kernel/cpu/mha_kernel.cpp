@@ -8,6 +8,7 @@ void mha_kernel_cpu(
     const tensor::Tensor& score, 
     const tensor::Tensor& key_cache, 
     const tensor::Tensor& value_cache, 
+    const tensor::Tensor& token_pos, 
     const tensor::Tensor& output, 
     int32_t layer_id, 
     int32_t pos, 
@@ -19,6 +20,7 @@ void mha_kernel_cpu(
     void* stream
 ) {
     UNUSED(stream);
+    UNUSED(token_pos);
     CHECK(!query.is_empty());
     CHECK(!score.is_empty());
     CHECK(!key_cache.is_empty());

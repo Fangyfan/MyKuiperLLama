@@ -27,7 +27,7 @@ base::Status QKNormRoPELaryer::check() const {
         LOG(ERROR) << "The input key error in the qk-norm-rope layer." << std::endl;
         return status;
     }
-    status = check_tensor_with_dim(token_pos, base::DeviceType::DeviceCPU, base::DataType::DataTypeInt32, 1);
+    status = check_tensor_with_dim(token_pos, device_type_, base::DataType::DataTypeInt32, 1);
     if (!status) {
         LOG(ERROR) << "The input token pos error in the qk-norm-rope layer." << std::endl;
         return status;

@@ -1,6 +1,7 @@
 #ifndef CODE_INCLUDE_MODEL_QWEN3_FUSED_H_
 #define CODE_INCLUDE_MODEL_QWEN3_FUSED_H_
 
+#include <cuda_runtime_api.h>
 #include "model.h"
 
 namespace model {
@@ -39,6 +40,13 @@ public:
     // 把离散的 token id 变成连续的向量
     op::EmbeddingResult embedding(const std::vector<int32_t>& token_ids) const override;
 
+    // CUDA Graph 单 token 解码: 按 seq_len 分两张图 (<= 128 FlashAttention / > 128 Split-KV FlashDecoding)，lazy capture
+    // input_on_host = true: 输入 token 来自 host (prefill / first decode step)，需要 H2D 到 ArgmaxToken
+    // input_on_host = false: 输入 token 是上一拍图内 argmax 结果 (on device)，无需 H2D
+    base::Status graph_decode(int32_t pos, int32_t& next_token_id, bool input_on_host) const;
+
+    ~Qwen3FusedModel();
+
 private:
     // 模型缓冲区 (Buffer) 内存分配: 一次性申请并分配推理过程中所需的所有显存/内存
     void allocate_model_buffers() override;
@@ -75,6 +83,14 @@ private:
 private:
     std::shared_ptr<kernel::CudaConfig> cuda_config_;
     std::unique_ptr<Qwen3FusedLayers> qwen3_fused_layers_;
+
+    // CUDA Graph:
+    // 0: FlashAttention (seq_len <= 128)
+    // 1: Split-KV FlashDecoding (seq_len > 128)
+    mutable cudaGraph_t cuda_graph_[2] = { nullptr, nullptr };
+    mutable cudaGraphExec_t cuda_graph_exec_[2] = { nullptr, nullptr };
+    mutable bool graph_captured_[2] = { false, false };
+    mutable int32_t* token_pinned_ = nullptr; // pinned memory 接受 argmax H2D 结果
 };
 }  // namespace model
 

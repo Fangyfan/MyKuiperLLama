@@ -10,6 +10,7 @@
 #include "op/gate_up_swiglu.h"
 #include "op/swiglu.h"
 #include "../op/kernel/kernel_interface.h"
+#include "../op/kernel/cuda/argmax_kernel.cuh"
 
 namespace model {
 void Qwen3FusedLayers::to_cuda(std::shared_ptr<kernel::CudaConfig> cuda_config) {
@@ -85,10 +86,43 @@ base::Status Qwen3FusedModel::init(base::DeviceType device_type) {
                                                    cuda_config_ ? cuda_config_->stream : nullptr);
     // 4. 采样器初始化
     sampler_ = std::make_unique<sampler::ArgmaxSampler>(device_type_);
+
+    // 5. CUDA Graph 所需的 pinned memory (argmax result D2H)
+    if (device_type_ == base::DeviceType::DeviceCUDA) {
+        if (cudaHostAlloc(&token_pinned_, sizeof(int32_t), cudaHostAllocDefault) != cudaSuccess) {
+            return base::error::internal_error("The cuda host alloc failed.");
+        }
+    }
     return base::error::success();
 }
 
+Qwen3FusedModel::~Qwen3FusedModel() {
+    for (int32_t i = 0; i < 2; ++i) {
+        if (cuda_graph_exec_[i]) {
+            cudaGraphExecDestroy(cuda_graph_exec_[i]);
+        }
+        if (cuda_graph_[i]) {
+            cudaGraphDestroy(cuda_graph_[i]);
+        }
+    }
+    if (token_pinned_) {
+        cudaFreeHost(token_pinned_);
+    }
+}
+
 base::Status Qwen3FusedModel::predict(const tensor::Tensor& token_embedding, const tensor::Tensor& token_pos, bool is_prompt, int32_t& next_token_id) const {
+    // eager 路径: 先把 pos 拷贝到 device，kernel 统一从 device 读 pos（与 CUDA Graph 路径行为一致）
+    if (device_type_ == base::DeviceType::DeviceCUDA) {
+        const tensor::Tensor& token_pos_cu = get_buffer(ModelBufferType::TokenPositionCu);
+        base::CUDADeviceAllocatorFactory::get_instance()->memcpy(
+            const_cast<int32_t*>(token_pos_cu.ptr<int32_t>()),
+            token_pos.ptr<int32_t>(),
+            sizeof(int32_t),
+            base::MemcpyKind::MemcpyCPU2CUDA,
+            cuda_config_ ? cuda_config_->stream : nullptr,
+            true
+        );
+    }
     base::Status status = forward(token_embedding, token_pos);
     if (!status) {
         return status;
@@ -477,6 +511,12 @@ void Qwen3FusedModel::allocate_model_buffers() {
     insert_buffer(ModelBufferType::TokenIds, token_ids);
     insert_buffer(ModelBufferType::TokenPosition, token_pos);
 
+    // device 上的 token pos，kernel 直接读取 (CUDA Graph 兼容)
+    if (device_type_ == base::DeviceType::DeviceCUDA) {
+        tensor::Tensor token_pos_cu(base::DataType::DataTypeInt32, 1, true, allocator_cu);
+        insert_buffer(ModelBufferType::TokenPositionCu, token_pos_cu);
+    }
+
     tensor::Tensor token_embeddings(base::DataType::DataTypeBf16, 1, hidden_dim, true, allocator);
     insert_buffer(ModelBufferType::TokenEmbeddings, token_embeddings);
 
@@ -499,7 +539,8 @@ void Qwen3FusedModel::allocate_model_buffers() {
     insert_buffer(ModelBufferType::Query, query);
     insert_buffer(ModelBufferType::MHAOutput, gqa_output);
 
-    tensor::Tensor kv_split_output(base::DataType::DataTypeFp32, head_num, 4 * max_seq_len, true, allocator);
+    // 每个 head 按最大 split 数量 (max_seq_len / 32) 预留，每个 split 存 head_dim + 2 (value sum 与 max)
+    tensor::Tensor kv_split_output(base::DataType::DataTypeFp32, head_num, (max_seq_len / 32) * (head_dim + 2), true, allocator);
     insert_buffer(ModelBufferType::KVSplitOutput, kv_split_output);
 
     tensor::Tensor swiglu_output(base::DataType::DataTypeBf16, immediate_dim, true, allocator);
@@ -519,17 +560,22 @@ void Qwen3FusedModel::rmsnorm_qkv_rope(int32_t layer_id, const tensor::Tensor& i
     const tensor::Tensor& norm_input = get_buffer(ModelBufferType::MHAPreRMSNorm);
     STATUS_CHECK(qwen3_fused_layers_->pre_rmsnorm_layers_.at(layer_id)->forward(input, norm_input));
 
+    // device 上的 pos: CUDA kernel 从 device 读 pos (CUDA Graph 兼容)，CPU 直接用 host pos tensor
+    const tensor::Tensor& pos_dev = (device_type_ == base::DeviceType::DeviceCUDA) ?
+        get_buffer(ModelBufferType::TokenPositionCu) : token_pos;
+
     // 2. Fused QKV Proj => [qeury, key, value]
+    // key value 指向所在层 KV Cache 起始位置，实际写入位置由 pos_dev 决定
     tensor::Tensor query = get_buffer(ModelBufferType::Query);
-    const auto& [key, value] = slice_kv_cache(layer_id, token_pos.index<int32_t>(0));
+    const auto& [key, value] = slice_kv_cache(layer_id, 0);
     STATUS_CHECK(qwen3_fused_layers_->fused_qkv_proj_layers_.at(layer_id)->
-        forward(norm_input, query, key, value, tensor::Tensor()));
+        forward(norm_input, query, key, value, pos_dev, tensor::Tensor()));
 
     // 3. QK-Norm + QK-RoPE
     const tensor::Tensor& sin_cache = get_buffer(ModelBufferType::SinCache);
     const tensor::Tensor& cos_cache = get_buffer(ModelBufferType::CosCache);
     STATUS_CHECK(qwen3_fused_layers_->fused_qk_norm_rope_layers_.at(layer_id)->
-        forward(query, key, token_pos, sin_cache, cos_cache, tensor::Tensor()));
+        forward(query, key, pos_dev, sin_cache, cos_cache, tensor::Tensor()));
 }
 
 void Qwen3FusedModel::flash_decoding_gqa(int32_t layer_id, const tensor::Tensor& residual_add, const tensor::Tensor& token_pos) const {
@@ -545,8 +591,11 @@ void Qwen3FusedModel::flash_decoding_gqa(int32_t layer_id, const tensor::Tensor&
     const tensor::Tensor& value_cache = get_buffer(ModelBufferType::ValueCache);
     const tensor::Tensor& kv_split_output = get_buffer(ModelBufferType::KVSplitOutput);
     const tensor::Tensor& gqa_output = get_buffer(ModelBufferType::MHAOutput);
+    // device 上的 pos: CUDA kernel 从 device 读 pos (CUDA Graph 兼容)，CPU 直接用 host pos tensor
+    const tensor::Tensor& pos_dev = (device_type_ == base::DeviceType::DeviceCUDA) ?
+        get_buffer(ModelBufferType::TokenPositionCu) : token_pos;
     STATUS_CHECK(qwen3_fused_layers_->flashdecoding_gqa_layer_->
-        forward(query, key_cache, value_cache, kv_split_output, gqa_output));
+        forward(query, key_cache, value_cache, kv_split_output, pos_dev, gqa_output));
 
     // 3. O Proj + Residual Add
     STATUS_CHECK(qwen3_fused_layers_->fused_o_proj_add_layers_.at(layer_id)->forward(gqa_output, residual_add));
@@ -584,14 +633,99 @@ int32_t Qwen3FusedModel::post_process(bool is_prompt) const {
     const tensor::Tensor& argmax_token = get_buffer(ModelBufferType::ArgmaxToken);
     const tensor::Tensor& argmax_buffer = get_buffer(ModelBufferType::ArgmaxBuffer);
     CHECK_EQ(logits.size(), config_->vocab_size);
+    // CUDA sample 需要 pinned memory 接收 D2H 结果（与 CUDA Graph 路径共用 token_pinned_）
+    int output_cpu = 0;
     int32_t next_token_id = sampler_->sample(
         logits.ptr<float>(), 
         logits.size(), 
         const_cast<int32_t*>(argmax_token.ptr<int32_t>()), 
         const_cast<void*>(argmax_buffer.ptr<void>()), 
+        token_pinned_ ? token_pinned_ : &output_cpu, 
         cuda_config_ ? cuda_config_->stream : nullptr
     );
     return next_token_id;
+}
+
+base::Status Qwen3FusedModel::graph_decode(int32_t pos, int32_t& next_token_id, bool input_on_host) const {
+    if (device_type_ != base::DeviceType::DeviceCUDA) {
+        return base::error::internal_error("The graph decode only supports CUDA device.");
+    }
+    cudaStream_t stream = static_cast<cudaStream_t>(cuda_config_->stream);
+    auto allocator_cu = base::CUDADeviceAllocatorFactory::get_instance();
+    const tensor::Tensor& token_pos_cu = get_buffer(ModelBufferType::TokenPositionCu);
+    const tensor::Tensor& argmax_token = get_buffer(ModelBufferType::ArgmaxToken);
+
+    // 1. 按 seq_len 选择图: seq_len <= 128 单 kernel 路径, 否则 split-KV 路径
+    const int32_t branch = (pos + 1) <= 128 ? 0 : 1;
+    bool captured_now = false;
+    if (!graph_captured_[branch]) {
+        // lazy capture: 先 eager 跑一遍 (kernel 模块懒加载 + 参数校验)，再录制
+        std::vector<int32_t> token_ids{next_token_id};
+        const op::EmbeddingResult& embedding_result = embedding(token_ids);
+        tensor::Tensor token_pos = get_buffer(ModelBufferType::TokenPosition);
+        token_pos.index<int32_t>(0) = pos;
+        int32_t warmup_token_id = 0;
+        STATUS_CHECK(predict(get_embedding(token_pos, embedding_result, false), token_pos, false, warmup_token_id));
+
+        // graph 内 embedding 直接读 device 上的 ArgmaxToken (上一拍 argmax 的输出，无需 H2D)
+        tensor::Tensor token_embeddings = get_buffer(ModelBufferType::TokenEmbeddings);
+        token_embeddings.reshape({1, config_->hidden_dim});
+        tensor::Tensor token_num(base::DataType::DataTypeInt32, 1);
+        uint16_t* emb_ptr = const_cast<uint16_t*>(token_embeddings.ptr<uint16_t>());
+        tensor::Tensor token_embedding(base::DataType::DataTypeBf16, config_->hidden_dim, false, nullptr, emb_ptr);
+        token_embedding.set_device_type(device_type_);
+
+        if (cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal) != cudaSuccess) {
+            return base::error::internal_error("The cuda stream begin capture failed.");
+        }
+        base::Status status = qwen3_fused_layers_->embedding_layer_->forward(argmax_token, token_num, token_embeddings);
+        if (status) {
+            status = forward(token_embedding, token_pos);
+        }
+        if (status) {
+            const tensor::Tensor& logits = get_buffer(ModelBufferType::Logits);
+            const tensor::Tensor& argmax_buffer = get_buffer(ModelBufferType::ArgmaxBuffer);
+            sampler_->sample_async(
+                logits.ptr<float>(),
+                logits.size(),
+                const_cast<int32_t*>(argmax_token.ptr<int32_t>()),
+                const_cast<void*>(argmax_buffer.ptr<void>()),
+                token_pinned_,
+                stream
+            );
+            // 图尾 pos 自增: 下一拍 replay 直接读自增后的 pos，host 无需每步 H2D pos
+            kernel::pos_increment_kernel_cu(const_cast<int32_t*>(token_pos_cu.ptr<int32_t>()), stream);
+        }
+        if (cudaStreamEndCapture(stream, &cuda_graph_[branch]) != cudaSuccess || !status) {
+            return base::error::internal_error("The cuda stream end capture failed.");
+        }
+        if (cudaGraphInstantiateWithFlags(&cuda_graph_exec_[branch], cuda_graph_[branch], 0) != cudaSuccess) {
+            return base::error::internal_error("The cuda graph instantiate failed.");
+        }
+        graph_captured_[branch] = true;
+        captured_now = true;
+    }
+
+    // 2. 按需 H2D (都在 graph 之外):
+    // pos 只在起始步同步一次 (之后由图尾自增与 host pos 保持一致)；输入 token 只在来自 host 时同步
+    // (decode 稳态下上一拍图内 argmax 已把结果写进 ArgmaxToken)
+    // 注意 capture 当拍的 warmup 会用采样结果改写 ArgmaxToken，必须恢复成本步的输入 token
+    if (pos == 0) {
+        allocator_cu->memcpy(const_cast<int32_t*>(token_pos_cu.ptr<int32_t>()), &pos, sizeof(int32_t),
+                             base::MemcpyKind::MemcpyCPU2CUDA, stream, true);
+    }
+    if (input_on_host || captured_now) {
+        allocator_cu->memcpy(const_cast<int32_t*>(argmax_token.ptr<int32_t>()), &next_token_id, sizeof(int32_t),
+                             base::MemcpyKind::MemcpyCPU2CUDA, stream, true);
+    }
+
+    // 3. replay: embedding -> forward -> argmax -> D2H 全在图内
+    if (cudaGraphLaunch(cuda_graph_exec_[branch], stream) != cudaSuccess) {
+        return base::error::internal_error("The cuda graph launch failed.");
+    }
+    cudaStreamSynchronize(stream);
+    next_token_id = *token_pinned_;
+    return base::error::success();
 }
 
 }  // namespace model

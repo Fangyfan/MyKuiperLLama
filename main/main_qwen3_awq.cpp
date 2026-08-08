@@ -31,8 +31,6 @@ std::pair<int32_t, int32_t> generate(const Model& model, const std::string& sent
 
     const int32_t prompt_token_count = static_cast<int32_t>(input_token_ids.size());
 
-    const op::EmbeddingResult& prompt_embedding_result = model.embedding(input_token_ids);
-
     bool is_prompt = true;
     tensor::Tensor token_pos = model.get_buffer(model::ModelBufferType::TokenPosition);
 
@@ -59,17 +57,15 @@ std::pair<int32_t, int32_t> generate(const Model& model, const std::string& sent
         token_pos.index<int32_t>(0) = pos;
 
         if (pos < prompt_token_count - 1) {
-            // Prefill 阶段：处理 prompt。
-            // 不要每一步都 sync，否则会人为拉高 TTFT。
-            const tensor::Tensor& token_embedding = model.get_embedding(token_pos, prompt_embedding_result, is_prompt);
-            STATUS_CHECK(model.predict(token_embedding, token_pos, is_prompt, next_token_id));
+            // Prefill 阶段: 与 Decode 共用 CUDA Graph 路径（逐 token forward），采样结果丢弃
+            STATUS_CHECK(model.graph_decode(pos, next_token_id, true));
         } else {
-            // Decode 阶段：开始生成新 token。
+            // Decode 阶段: 开始生成新 token
+            // CUDA Graph 模式: embedding + forward + argmax 全在图内
+            // 首个 decode step 的输入是最后一个 prompt token（on host）
+            // 之后的输入是上一拍图内 argmax 的结果 (on device)
             is_prompt = false;
-            std::vector<int32_t> token_ids{next_token_id};
-            const op::EmbeddingResult& token_embedding_result = model.embedding(token_ids);
-            const tensor::Tensor& token_embedding = model.get_embedding(token_pos, token_embedding_result, is_prompt);
-            STATUS_CHECK(model.predict(token_embedding, token_pos, is_prompt, next_token_id));
+            STATUS_CHECK(model.graph_decode(pos, next_token_id, pos == prompt_token_count - 1));
 
             // CUDA 是异步执行的。这里必须同步，否则 chrono 测到的是 launch 时间。
             sync_cuda();

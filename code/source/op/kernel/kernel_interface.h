@@ -75,6 +75,7 @@ using FusedQKVGEMVKernel = void (*)(
     const tensor::Tensor& query, 
     const tensor::Tensor& key, 
     const tensor::Tensor& value, 
+    const tensor::Tensor& token_pos, 
     void* stream
 );
 FusedQKVGEMVKernel get_fused_qkv_gemv_kernel(base::DeviceType device_type);
@@ -85,6 +86,7 @@ using FusedQKVGEMVInt4Kernel = void (*)(
     const tensor::Tensor& query, 
     const tensor::Tensor& key, 
     const tensor::Tensor& value, 
+    const tensor::Tensor& token_pos, 
     const tensor::Tensor& zeros, 
     const tensor::Tensor& scales, 
     int32_t group_size, 
@@ -170,6 +172,7 @@ using MHAKernel = void (*)(
     const tensor::Tensor& score, 
     const tensor::Tensor& key_cache, 
     const tensor::Tensor& value_cache, 
+    const tensor::Tensor& token_pos, 
     const tensor::Tensor& output, 
     int32_t layer_id, 
     int32_t pos, 

@@ -25,6 +25,7 @@ void fused_qkv_gemv_kernel_cu(
     const tensor::Tensor& query, 
     const tensor::Tensor& key, 
     const tensor::Tensor& value, 
+    const tensor::Tensor& token_pos, 
     void* stream
 );
 
@@ -52,6 +53,7 @@ void fused_qkv_gemv_int4_kernel_cu(
     const tensor::Tensor& query, 
     const tensor::Tensor& key, 
     const tensor::Tensor& value, 
+    const tensor::Tensor& token_pos, 
     const tensor::Tensor& zeros, 
     const tensor::Tensor& scales, 
     int32_t group_size, 

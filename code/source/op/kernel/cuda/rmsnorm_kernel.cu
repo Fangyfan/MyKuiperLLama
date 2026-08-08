@@ -207,6 +207,7 @@ static __global__ __launch_bounds__(BLOCK_DIM) void fused_qk_norm_rope_kernel(
     __nv_bfloat16* __restrict__ query, 
     __nv_bfloat16* __restrict__ key, 
     const __nv_bfloat16* __restrict__ weight, 
+    const int32_t* __restrict__ token_pos, 
     const float* __restrict__ sin_cache, 
     const float* __restrict__ cos_cache, 
     int32_t head_num, 
@@ -214,9 +215,16 @@ static __global__ __launch_bounds__(BLOCK_DIM) void fused_qk_norm_rope_kernel(
     float eps
 ) {
     constexpr int32_t WARP_NUM = (BLOCK_DIM >> 5);
+    // 从 device 上的 pos 索引 sin/cos cache 的第 pos 行 (CUDA Graph 兼容)
+    // key 指向所在层的 KV Cache 的起始位置，需偏移到 pos 行
+    const int32_t pos = token_pos[0];
+    key += pos * (gridDim.x - head_num) * head_dim;
     __nv_bfloat16* in = (blockIdx.x < head_num) ? (query + blockIdx.x * head_dim) : (key + (blockIdx.x - head_num) * head_dim);
     const __nv_bfloat16* wei = (blockIdx.x < head_num) ? weight : (weight + head_dim);
     __nv_bfloat16* out = in;
+
+    const float* sptr = sin_cache + pos * (head_dim >> 1);
+    const float* cptr = cos_cache + pos * (head_dim >> 1);
 
     float val = __bfloat162float(in[threadIdx.x]);
     float sum = val * val;
@@ -230,8 +238,8 @@ static __global__ __launch_bounds__(BLOCK_DIM) void fused_qk_norm_rope_kernel(
 
     if (threadIdx.x < 64) {
         int32_t pair_id = threadIdx.x;
-        float sin_theta = sin_cache[pair_id];
-        float cos_theta = cos_cache[pair_id];
+        float sin_theta = sptr[pair_id];
+        float cos_theta = cptr[pair_id];
         
         float scale = shared_scale;
         float a = __bfloat162float(in[pair_id]) * __bfloat162float(wei[pair_id]) * scale;
@@ -267,7 +275,7 @@ void fused_qk_norm_rope_kernel_cu(
     CHECK(query.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(key.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(weight.device_type() == base::DeviceType::DeviceCUDA);
-    CHECK(token_pos.device_type() == base::DeviceType::DeviceCPU);
+    CHECK(token_pos.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(sin_cache.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(cos_cache.device_type() == base::DeviceType::DeviceCUDA);
     
@@ -278,15 +286,15 @@ void fused_qk_norm_rope_kernel_cu(
     __nv_bfloat16* q = reinterpret_cast<__nv_bfloat16*>(const_cast<uint16_t*>(query.ptr<uint16_t>()));
     __nv_bfloat16* k = reinterpret_cast<__nv_bfloat16*>(const_cast<uint16_t*>(key.ptr<uint16_t>()));
     const __nv_bfloat16* wei = reinterpret_cast<const __nv_bfloat16*>(const_cast<uint16_t*>(weight.ptr<uint16_t>()));
-    const int32_t pos = token_pos.index<int32_t>(0);
-    const float* sptr = sin_cache.ptr<float>(pos * head_dim / 2); // sptr 索引到第 pos 行
-    const float* cptr = cos_cache.ptr<float>(pos * head_dim / 2); // cptr 索引到第 pos 行
+    const int32_t* pos = token_pos.ptr<int32_t>();
+    const float* sptr = sin_cache.ptr<float>();
+    const float* cptr = cos_cache.ptr<float>();
     constexpr float eps = 1e-6f;
     
     dim3 blockDim(head_dim);
     dim3 gridDim(head_num + kv_head_num);
     cudaStream_t stream_ = stream ? static_cast<cudaStream_t>(stream) : nullptr;
-    fused_qk_norm_rope_kernel<128><<<gridDim, blockDim, 0, stream_>>>(q, k, wei, sptr, cptr, head_num, head_dim, eps);
+    fused_qk_norm_rope_kernel<128><<<gridDim, blockDim, 0, stream_>>>(q, k, wei, pos, sptr, cptr, head_num, head_dim, eps);
 }
 
 template <int32_t BLOCK_DIM>

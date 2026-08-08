@@ -214,12 +214,17 @@ static __global__ __launch_bounds__(BLOCK_DIM) void fused_qkv_gemv_bf16x8_kernel
     __nv_bfloat16* __restrict__ query,
     __nv_bfloat16* __restrict__ key,
     __nv_bfloat16* __restrict__ value,
+    const int32_t* __restrict__ token_pos,
     int32_t K, int32_t dim, int32_t kv_dim
 ) {
     constexpr int32_t WARP_NUM = (BLOCK_DIM >> 5);
     int32_t K8 = (K >> 3);
     const uint4* in8 = reinterpret_cast<const uint4*>(input);
     const uint4* wei8 = reinterpret_cast<const uint4*>(weight + blockIdx.x * K);
+
+    // key, value 指向所在层的 KV Cache 起始位置，实际写入位置由 device 上的 pos 决定 (CUDA Graph 兼容)
+    key += token_pos[0] * kv_dim;
+    value += token_pos[0] * kv_dim;
 
     float sum = 0.0f;
     for (int32_t i = threadIdx.x; i < K8; i += blockDim.x) {
@@ -250,8 +255,9 @@ void fused_qkv_gemv_kernel_cu(
     const tensor::Tensor& input,    // [hidden_dim]
     const tensor::Tensor& weight,   // [dim + 2 * kv_dim, hidden_dim]
     const tensor::Tensor& query,    // [dim]
-    const tensor::Tensor& key,      // [kv_dim]
-    const tensor::Tensor& value,    // [kv_dim]
+    const tensor::Tensor& key,      // [kv_dim] 指向所在层 KV Cache 起始地址
+    const tensor::Tensor& value,    // [kv_dim] 指向所在层 KV Cache 起始地址
+    const tensor::Tensor& token_pos,// [1] device 上的 pos，kernel 内部偏移 key / value 写入位置
     void* stream
 ) {
     CHECK(!input.is_empty() && input.dims_size() == 1);
@@ -259,18 +265,21 @@ void fused_qkv_gemv_kernel_cu(
     CHECK(!query.is_empty() && query.dims_size() == 1);
     CHECK(!key.is_empty() && key.dims_size() == 1);
     CHECK(!value.is_empty() && value.dims_size() == 1);
+    CHECK(!token_pos.is_empty() && token_pos.dims_size() == 1);
 
     CHECK(input.data_type() == base::DataType::DataTypeBf16);
     CHECK(weight.data_type() == base::DataType::DataTypeBf16);
     CHECK(query.data_type() == base::DataType::DataTypeBf16);
     CHECK(key.data_type() == base::DataType::DataTypeBf16);
     CHECK(value.data_type() == base::DataType::DataTypeBf16);
+    CHECK(token_pos.data_type() == base::DataType::DataTypeInt32);
 
     CHECK(input.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(weight.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(query.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(key.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(value.device_type() == base::DeviceType::DeviceCUDA);
+    CHECK(token_pos.device_type() == base::DeviceType::DeviceCUDA);
 
     const int32_t hidden_dim = input.get_dim(0);
     const int32_t N = weight.get_dim(0);
@@ -294,7 +303,7 @@ void fused_qkv_gemv_kernel_cu(
     dim3 gridDim(N);
     dim3 blockDim(256);
     cudaStream_t stream_ = stream ? static_cast<cudaStream_t>(stream) : nullptr;
-    fused_qkv_gemv_bf16x8_kernel<256><<<gridDim, blockDim, 0, stream_>>>(in, wei, q, k, v, K, dim, kv_dim);
+    fused_qkv_gemv_bf16x8_kernel<256><<<gridDim, blockDim, 0, stream_>>>(in, wei, q, k, v, token_pos.ptr<int32_t>(), K, dim, kv_dim);
 }
 
 template <int32_t BLOCK_DIM>
@@ -518,12 +527,17 @@ static __global__ __launch_bounds__(BLOCK_DIM) void fused_qkv_gemv_int4x8_bf16x8
     __nv_bfloat16* __restrict__ query,          // [dim]
     __nv_bfloat16* __restrict__ key,            // [kv_dim]
     __nv_bfloat16* __restrict__ value,          // [kv_dim]
+    const int32_t* __restrict__ token_pos,
     int32_t group_size, int32_t K, int32_t dim, int32_t kv_dim
 ) {
     constexpr int32_t WARP_NUM = (BLOCK_DIM >> 5);
     const int32_t n_pack_id = blockIdx.x;
     const int32_t out_base = n_pack_id << 3;
     const int32_t group_num = K / group_size;
+
+    // key, value 指向所在层的 KV Cache 起始位置，实际写入位置由 device 上的 pos 决定 (CUDA Graph 兼容)
+    key += token_pos[0] * kv_dim;
+    value += token_pos[0] * kv_dim;
 
     const int32_t* __restrict__ wei_row = wei + n_pack_id * K;
     const int32_t* __restrict__ zero_row = zeros + n_pack_id * group_num;
@@ -600,6 +614,7 @@ void fused_qkv_gemv_int4_kernel_cu(
     const tensor::Tensor& query, 
     const tensor::Tensor& key, 
     const tensor::Tensor& value, 
+    const tensor::Tensor& token_pos, 
     const tensor::Tensor& zeros, 
     const tensor::Tensor& scales, 
     int32_t group_size, 
@@ -610,6 +625,7 @@ void fused_qkv_gemv_int4_kernel_cu(
     CHECK(!query.is_empty() && query.dims_size() == 1);
     CHECK(!key.is_empty() && key.dims_size() == 1);
     CHECK(!value.is_empty() && value.dims_size() == 1);
+    CHECK(!token_pos.is_empty() && token_pos.dims_size() == 1);
     CHECK(!zeros.is_empty() && zeros.dims_size() == 1);
     CHECK(!scales.is_empty() && scales.dims_size() == 1);
 
@@ -617,6 +633,7 @@ void fused_qkv_gemv_int4_kernel_cu(
     CHECK(query.data_type() == base::DataType::DataTypeBf16);
     CHECK(key.data_type() == base::DataType::DataTypeBf16);
     CHECK(value.data_type() == base::DataType::DataTypeBf16);
+    CHECK(token_pos.data_type() == base::DataType::DataTypeInt32);
     CHECK(weight.data_type() == base::DataType::DataTypeInt4x8);
     CHECK(zeros.data_type() == base::DataType::DataTypeInt4x8);
     CHECK(scales.data_type() == base::DataType::DataTypeFp16);
@@ -626,6 +643,7 @@ void fused_qkv_gemv_int4_kernel_cu(
     CHECK(query.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(key.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(value.device_type() == base::DeviceType::DeviceCUDA);
+    CHECK(token_pos.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(zeros.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(scales.device_type() == base::DeviceType::DeviceCUDA);
 
@@ -661,7 +679,8 @@ void fused_qkv_gemv_int4_kernel_cu(
     dim3 gridDim(N);
     dim3 blockDim(256);
     cudaStream_t stream_ = stream ? static_cast<cudaStream_t>(stream) : nullptr;
-    fused_qkv_gemv_int4x8_bf16x8_kernel<256><<<gridDim, blockDim, 0, stream_>>>(in, wei, z, s, q, k, v, group_size, K, dim, kv_dim);
+    fused_qkv_gemv_int4x8_bf16x8_kernel<256><<<gridDim, blockDim, 0, stream_>>>(
+        in, wei, z, s, q, k, v, token_pos.ptr<int32_t>(), group_size, K, dim, kv_dim);
 }
 
 template <int32_t BLOCK_DIM>

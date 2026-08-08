@@ -48,12 +48,13 @@ static __global__ __launch_bounds__(BLOCK_DIM) void flashattention_gqa_cp_async_
     const __nv_bfloat16* __restrict__ value_cache,
     __nv_bfloat16* __restrict__ output,
     int32_t layer_offset,
-    int32_t seq_len,
+    const int32_t* __restrict__ token_pos,
     int32_t kv_dim,
     int32_t kv_mul,
     int32_t head_dim,
     float scale
 ) {
+    const int32_t seq_len = token_pos[0] + 1;
     extern __shared__ __align__(16) unsigned char shared_mem[];
     __nv_bfloat16* s_Q = reinterpret_cast<__nv_bfloat16*>(shared_mem);  // [head_dim]
     __nv_bfloat16* s_K = s_Q + head_dim;                                // [2, Bc, head_dim]
@@ -214,14 +215,15 @@ static __global__ __launch_bounds__(BLOCK_DIM) void flashdecoding_gqa_split_kern
     const __nv_bfloat16* __restrict__ value_cache,
     float* __restrict__ kv_split_output,
     int32_t layer_offset,
-    int32_t seq_len,
+    const int32_t* __restrict__ token_pos,
     int32_t kv_dim,
     int32_t kv_mul,
     int32_t head_dim,
     int32_t kv_split_size,
-    int32_t kv_split_num,
     float scale
 ) {
+    const int32_t seq_len = token_pos[0] + 1;
+    const int32_t kv_split_num = (seq_len + kv_split_size - 1) / kv_split_size;
     extern __shared__ __align__(16) unsigned char shared_mem[];
     __nv_bfloat16* s_Q = reinterpret_cast<__nv_bfloat16*>(shared_mem);  // [head_dim]
     __nv_bfloat16* s_K = s_Q + head_dim;                                // [Bc, head_dim]
@@ -229,11 +231,15 @@ static __global__ __launch_bounds__(BLOCK_DIM) void flashdecoding_gqa_split_kern
     float* s_O = reinterpret_cast<float*>(s_V + Bc * head_dim);         // [head_dim]
     float* s_S = s_O + head_dim;                                        // [Bc]
     float* s_P = s_S + Bc;                                              // [Bc]
-    
+
     // grid.y = q head
     // grid.x = kv split id
     const int32_t head_id = blockIdx.y;
     const int32_t kv_split_id = blockIdx.x;
+    // CUDA Graph 下 grid 固定为最大 split 数，超出当前 seq_len 的 split 直接退出
+    if (kv_split_id >= kv_split_num) {
+        return;
+    }
     const int32_t kv_head_id = head_id / kv_mul;
     const int32_t head_offset = layer_offset + kv_head_id * head_dim;
 
@@ -402,8 +408,10 @@ static __global__ __launch_bounds__(BLOCK_DIM) void flashdecoding_gqa_combine_ke
     __nv_bfloat16* __restrict__ output,
     int32_t head_dim,
     int32_t kv_split_size,
-    int32_t kv_split_num
+    const int32_t* __restrict__ token_pos
 ) {
+    const int32_t seq_len = token_pos[0] + 1;
+    const int32_t kv_split_num = (seq_len + kv_split_size - 1) / kv_split_size;
     const int32_t head_id = blockIdx.x;
     const int32_t lane = threadIdx.x & 31;
     kv_split_output += head_id * kv_split_num * (head_dim + 2);
@@ -442,6 +450,7 @@ void mha_kernel_cu(
     const tensor::Tensor& key_cache,
     const tensor::Tensor& value_cache,
     const tensor::Tensor& kv_split_output,
+    const tensor::Tensor& token_pos,
     const tensor::Tensor& output,
     int32_t layer_id,
     int32_t pos,
@@ -456,18 +465,21 @@ void mha_kernel_cu(
     CHECK(!key_cache.is_empty());
     CHECK(!value_cache.is_empty());
     CHECK(!kv_split_output.is_empty());
+    CHECK(!token_pos.is_empty());
     CHECK(!output.is_empty());
 
     CHECK(query.data_type() == base::DataType::DataTypeBf16);
     CHECK(key_cache.data_type() == base::DataType::DataTypeBf16);
     CHECK(value_cache.data_type() == base::DataType::DataTypeBf16);
     CHECK(kv_split_output.data_type() == base::DataType::DataTypeFp32);
+    CHECK(token_pos.data_type() == base::DataType::DataTypeInt32);
     CHECK(output.data_type() == base::DataType::DataTypeBf16);
 
     CHECK(query.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(key_cache.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(value_cache.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(kv_split_output.device_type() == base::DeviceType::DeviceCUDA);
+    CHECK(token_pos.device_type() == base::DeviceType::DeviceCUDA);
     CHECK(output.device_type() == base::DeviceType::DeviceCUDA);
 
     CHECK(pos >= 0);
@@ -487,6 +499,7 @@ void mha_kernel_cu(
     const float scale = rsqrtf(static_cast<float>(head_dim));
     const int32_t layer_offset = layer_id * max_seq_len * kv_dim;
     const int32_t seq_len = pos + 1;
+    const int32_t* token_pos_ptr = token_pos.ptr<int32_t>();
 
     cudaStream_t stream_ = stream ? static_cast<cudaStream_t>(stream) : nullptr;
 
@@ -506,25 +519,26 @@ void mha_kernel_cu(
     const int32_t shared_size = (head_dim + 2 * Bc * head_dim) * sizeof(uint16_t) + (head_dim + 2 * Bc) * sizeof(float);
     if (seq_len <= 128) {
         flashattention_gqa_cp_async_kernel<thread_num, Bc><<<head_num, thread_num, shared_size, stream_>>>(
-            query_ptr, key_cache_ptr, value_cache_ptr, output_ptr, layer_offset, seq_len, kv_dim, kv_mul, head_dim, scale
+            query_ptr, key_cache_ptr, value_cache_ptr, output_ptr, layer_offset, token_pos_ptr, kv_dim, kv_mul, head_dim, scale
         );
         return;
     }
 
     // 短上下文走单 kernel，避免额外 combine kernel launch
     // 长上下文走 split-KV，提高 block 数量，避免只有 head_num 个 block 导致 SM 利用率低
+    // CUDA Graph 兼容: grid 固定为最大 split 数，kernel 内部根据 device 上的 pos 计算实际 split 数并提前退出
     constexpr int32_t kv_split_size = Bc;
-    const int32_t kv_split_num = (seq_len + kv_split_size - 1) / kv_split_size;
+    const int32_t kv_split_num_max = max_seq_len / kv_split_size;
 
-    dim3 gridDim(kv_split_num, head_num);
+    dim3 gridDim(kv_split_num_max, head_num);
     flashdecoding_gqa_split_kernel<thread_num, Bc><<<gridDim, thread_num, shared_size, stream_>>>(
-        query_ptr, key_cache_ptr, value_cache_ptr, kv_split_output_ptr, layer_offset, seq_len, kv_dim, kv_mul, head_dim,
-        kv_split_size, kv_split_num, scale
+        query_ptr, key_cache_ptr, value_cache_ptr, kv_split_output_ptr, layer_offset, token_pos_ptr, kv_dim, kv_mul, head_dim,
+        kv_split_size, scale
     );
 
-    const int32_t combine_shared_size = 2 * kv_split_num * sizeof(float);
+    const int32_t combine_shared_size = 2 * kv_split_num_max * sizeof(float);
     flashdecoding_gqa_combine_kernel<thread_num><<<head_num, thread_num, combine_shared_size, stream_>>>(
-        kv_split_output_ptr, output_ptr, head_dim, kv_split_size, kv_split_num
+        kv_split_output_ptr, output_ptr, head_dim, kv_split_size, token_pos_ptr
     );
 }
 

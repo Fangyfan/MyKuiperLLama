@@ -103,14 +103,14 @@ static __global__ void argmax_kernel_2(
     }
 }
 
-int32_t argmax_kernel_cu(
+void argmax_kernel_cu(
     const float* input, 
     int32_t size, /* 151936 */
     int32_t* argmax_token, 
     void* argmax_buffer, 
+    int32_t* output_cpu, 
     void* stream
 ) {
-    int32_t output_idx_cpu = -1;
     int32_t* output_idx_cu_ptr = argmax_token;
     val_idx* temp = reinterpret_cast<val_idx*>(argmax_buffer);
 
@@ -121,14 +121,18 @@ int32_t argmax_kernel_cu(
     cudaStream_t stream_ = stream ? static_cast<cudaStream_t>(stream) : nullptr;
     argmax_kernel_1<SM_NUM, BLOCK_DIM><<<SM_NUM, BLOCK_DIM, 0, stream_>>>(input, size, temp);
     argmax_kernel_2<<<1, 32, 0, stream_>>>(temp, output_idx_cu_ptr);
-    if (stream_) {
-        // 因为这里是异步 (Async) 调用，调用函数后会立马返回，所有 cuda 操作进入流任务队列，按照顺序执行
-        // 这里必须要进行 cuda 流同步，保证流任务队列执行完成，即 output_idx_cu 结果计算完成
-        cudaMemcpyAsync(&output_idx_cpu, output_idx_cu_ptr, sizeof(int32_t), cudaMemcpyDeviceToHost, stream_);
-        cudaStreamSynchronize(stream_);
-    } else {
-        cudaMemcpy(&output_idx_cpu, output_idx_cu_ptr, sizeof(int32_t), cudaMemcpyDeviceToHost);
-    }
-    return output_idx_cpu;
+    // 不做流同步: 同步由调用方负责，这样本函数可以被 CUDA Graph capture
+    // output_cpu 必须是 pinned memory，保证 cudaMemcpyAsync 可以被 capture
+    cudaMemcpyAsync(output_cpu, output_idx_cu_ptr, sizeof(int32_t), cudaMemcpyDeviceToHost, stream_);
+}
+
+static __global__ void pos_increment_kernel(int32_t* pos) {
+    pos[0] += 1;
+}
+
+void pos_increment_kernel_cu(int32_t* pos, void* stream) {
+    // pos 自增放在图尾，供下一拍 replay 使用（decode 稳态下 host 不再 H2D pos）
+    cudaStream_t stream_ = stream ? static_cast<cudaStream_t>(stream) : nullptr;
+    pos_increment_kernel<<<1, 1, 0, stream_>>>(pos);
 }
 }  // namespace kernel

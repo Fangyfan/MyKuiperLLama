@@ -16,13 +16,14 @@
 - 支持 **KV Cache** 与自回归文本生成流程，缓存 KV 加快推理速度
 - 引入 **CUDA 显存池**（大 / 小块分级复用 +  Best-Fit 分配策略），减少频繁分配和释放开销
 - 通过 **mmap 内存映射** 实现 **零拷贝融合算子权重加载** 
-- 实现 Qwen3 模型 Decode 阶段 GQA 实现 **短上下文 FlashAttention** 和 **长上下文 KV-split FlashDecoding** 的 dispatch 策略以减少 HBM 访存并且提高 GPU 并行度，端到端性能提升 41.4%
-- 实现 Qwen3 模型 **BF16 / FP32 混合精度融合算子**（QKV Packed GEMV、QK-Norm + QK-RoPE、GEMV + ResidualAdd、Gate-Up Packed GEMV + SwiGLU、ResidualAdd + RMSNorm），通过 **FP32 乘加减少精度损失**，采用 **bf16x8 向量化访存**，Warp Shuffle 优化 Block 规约，端到端性能提升 27.7%
-- 手写 BF16 / FP32 混合精度 GEMV 融合算子 **较 cuBLASLt 实现 1.68x 加速** 
+- 实现 Qwen3 模型 Decode 阶段 GQA 实现 **短上下文 (seqlen <= 128) FlashAttention** 和 **长上下文 (seqlen > 128) Split-KV FlashDecoding** 的 dispatch 策略以减少 HBM 访存并且提高 GPU 并行度，端到端性能提升 **41.4%** 
+- 实现 Qwen3 模型 **BF16 / FP32 混合精度融合算子**（QKV Packed GEMV、QK-Norm + QK-RoPE、GEMV + ResidualAdd、Gate-Up Packed GEMV + SwiGLU、ResidualAdd + RMSNorm），通过 **FP32 乘加减少精度损失**，采用 **bf16x8 向量化访存**，Warp Shuffle 优化 Block 规约，端到端性能提升 **27.7%** 
+- 手写 BF16 / FP32 混合精度 GEMV 融合算子 **较 cuBLASLt 实现 1.54x - 1.68x 加速** 
 - 支持 **AWQ INT4 量化推理 (W4A16)**，量化融合算子权重 mmap 零拷贝加载，采用 AutoAWQ N-packed 量化格式
 - 实现 Qwen3-4B-AWQ 模型 **INT4 / BF16 / FP32 混合精度 GEMV 融合算子**（INT4 QKV Packed GEMV、INT4 GEMV + ResidualAdd、INT4 Gate-Up Packed GEMV + SwiGLU）
-- **Qwen3-4B BF16 单 Batch Decode 达到理论极限性能的 89%，超越 vLLM 性能，较 PyTorch 实现 1.87x 加速** 
-- Qwen3-4B-AWQ INT4 量化模型推理较 Qwen3-4B 纯 BF16 推理实现 2.11x 端到端加速
+- 实现 **Prefill / Decode 全阶段 CUDA Graph 推理**，完全消除 Kernel Launch 开销；对两条 GQA Kernel dispatch 路径 lazy capture 双图，Host 端按照 seqlen 选择对应 Graph 进行 replay，端到端性能提升 **15.5%** 
+- **Qwen3-4B BF16 单 Batch Decode 达到理论极限性能的 91%，超越 vLLM 性能，较 PyTorch 实现 1.92x 加速** 
+- Qwen3-4B-AWQ INT4 量化模型推理较 Qwen3-4B 纯 BF16 推理实现 **2.15x** 端到端加速
 
 
 
@@ -30,7 +31,7 @@
 
 |                 | LLMInfer     | vLLM (CUDA Graph) | vLLM (Eager) | PyTorch       | 理论极限     |
 | --------------- | ------------ | ----------------- | ------------ | ------------- | ------------ |
-| **Decode TPOT** | 8.95ms/token | 9.15ms/token      | 9.65ms/token | 16.84ms/token | 7.98ms/token |
+| **Decode TPOT** | 8.80ms/token | 9.15ms/token      | 9.65ms/token | 16.84ms/token | 7.98ms/token |
 
 
 
@@ -111,11 +112,11 @@ In summary, AI is a transformative technology that enhances efficiency, accuracy
 --------------- Performance Metrics ---------------
 prompt_tokens: 14
 decode_tokens: 1041
-time(s): 9.43101
-decode_tokens/s_total: 110.381
-TTFT (First Token Latency): 121.681 ms
-TPOT (Average Token Latency): 8.95111 ms
-decode_tokens/s_after_first: 111.718
+time(s): 9.27325
+decode_tokens/s_total: 112.258
+TTFT (First Token Latency): 119.511 ms
+TPOT (Average Token Latency): 8.80151 ms
+decode_tokens/s_after_first: 113.617
 ---------------------------------------------------
 ```
 
@@ -178,11 +179,11 @@ In short, **AI is a tool that mimics human intelligence to solve complex problem
 --------------- Performance Metrics ---------------
 prompt_tokens: 14
 decode_tokens: 766
-time(s): 3.29322
-decode_tokens/s_total: 232.599
-TTFT (First Token Latency): 56.38 ms
-TPOT (Average Token Latency): 4.23091 ms
-decode_tokens/s_after_first: 236.356
+time(s): 3.18262
+decode_tokens/s_total: 240.682
+TTFT (First Token Latency): 54.3794 ms
+TPOT (Average Token Latency): 4.08903 ms
+decode_tokens/s_after_first: 244.557
 ---------------------------------------------------
 ```
 
@@ -205,9 +206,9 @@ huggingface-cli download Qwen/Qwen3-4B \
 将官方模型权重文件导出为 BF16 / FP32 的 C++ 可读 .bin 权重文件
 
 ```bash
-python tools/export_qwen3/qwen3_dense_unified_converter.py \
+python tools/qwen3/qwen3_dense_unified_converter.py \
   --model_dir /home/yifanfang/LLMInfer/models/qwen3/Qwen3-4B \
-  --out_file /home/yifanfang/LLMInfer/models/qwen3/qwen3_4b_fp32.bin
+  --out_file /home/yifanfang/LLMInfer/models/qwen3/qwen3_4b_bf16.bin
 ```
 
 

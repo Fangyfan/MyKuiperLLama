@@ -9,6 +9,7 @@ void mha_kernel_cpu(
     const tensor::Tensor& score, 
     const tensor::Tensor& key_cache, 
     const tensor::Tensor& value_cache, 
+    const tensor::Tensor& token_pos, 
     const tensor::Tensor& output, 
     int32_t layer_id, 
     int32_t pos, 

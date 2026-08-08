@@ -37,6 +37,7 @@ enum class ModelBufferType : uint8_t {
     ArgmaxBuffer = 18,      // 贪心采样中间结果缓存 buffer
     SwiGLUOutput = 19,      // Gate/Up Proj + SwiGLU 融合算子输出向量
     ResidualAdd = 20,       // Attention / FFN 每次 Pre RMSNorm 之前的输入向量
+    TokenPositionCu = 21,   // Device 上的 token 位置 (CUDA Graph 下 kernel 从 device 读 pos)
 };
 }  // namespace model
 
