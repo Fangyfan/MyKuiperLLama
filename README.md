@@ -21,7 +21,7 @@
 - 手写 BF16 / FP32 混合精度 GEMV 融合算子 **较 cuBLASLt 实现 1.54x - 1.68x 加速** 
 - 支持 **AWQ INT4 量化推理 (W4A16)**，量化融合算子权重 mmap 零拷贝加载，采用 AutoAWQ N-packed 量化格式
 - 实现 Qwen3-4B-AWQ 模型 **INT4 / BF16 / FP32 混合精度 GEMV 融合算子**（INT4 QKV Packed GEMV、INT4 GEMV + ResidualAdd、INT4 Gate-Up Packed GEMV + SwiGLU）
-- 实现 **Prefill / Decode 全阶段 CUDA Graph 推理**，完全消除 Kernel Launch 开销；对两条 GQA Kernel dispatch 路径 lazy capture 双图，Host 端按照 seqlen 选择对应 Graph 进行 replay，端到端性能提升 **15.5%** 
+- 实现 **Prefill / Decode 全阶段 CUDA Graph 推理**，完全消除 Kernel Launch 开销；对两条 GQA Kernel dispatch 路径 lazy capture 双图，Host 端按照 seqlen 选择对应 Graph 进行 replay，端到端性能提升 **16.5%** 
 - **Qwen3-4B BF16 单 Batch Decode 达到理论极限性能的 91%，超越 vLLM 性能，较 PyTorch 实现 1.92x 加速** 
 - Qwen3-4B-AWQ INT4 量化模型推理较 Qwen3-4B 纯 BF16 推理实现 **2.15x** 端到端加速
 
@@ -31,7 +31,7 @@
 
 |                 | LLMInfer     | vLLM (CUDA Graph) | vLLM (Eager) | PyTorch       | 理论极限     |
 | --------------- | ------------ | ----------------- | ------------ | ------------- | ------------ |
-| **Decode TPOT** | 8.80ms/token | 9.15ms/token      | 9.65ms/token | 16.84ms/token | 7.98ms/token |
+| **Decode TPOT** | 8.79ms/token | 9.15ms/token      | 9.65ms/token | 16.84ms/token | 7.98ms/token |
 
 
 
@@ -112,11 +112,11 @@ In summary, AI is a transformative technology that enhances efficiency, accuracy
 --------------- Performance Metrics ---------------
 prompt_tokens: 14
 decode_tokens: 1041
-time(s): 9.27325
-decode_tokens/s_total: 112.258
-TTFT (First Token Latency): 119.511 ms
-TPOT (Average Token Latency): 8.80151 ms
-decode_tokens/s_after_first: 113.617
+time(s): 9.26503
+decode_tokens/s_total: 112.358
+TTFT (First Token Latency): 119.501 ms
+TPOT (Average Token Latency): 8.79362 ms
+decode_tokens/s_after_first: 113.719
 ---------------------------------------------------
 ```
 
@@ -179,11 +179,11 @@ In short, **AI is a tool that mimics human intelligence to solve complex problem
 --------------- Performance Metrics ---------------
 prompt_tokens: 14
 decode_tokens: 766
-time(s): 3.18262
-decode_tokens/s_total: 240.682
-TTFT (First Token Latency): 54.3794 ms
-TPOT (Average Token Latency): 4.08903 ms
-decode_tokens/s_after_first: 244.557
+time(s): 3.18113
+decode_tokens/s_total: 240.795
+TTFT (First Token Latency): 54.3661 ms
+TPOT (Average Token Latency): 4.08709 ms
+decode_tokens/s_after_first: 244.673
 ---------------------------------------------------
 ```
 

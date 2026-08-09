@@ -157,7 +157,7 @@ int main(int argc, char* argv[]) {
 
         // warmup：避免首次 CUDA 初始化、kernel 加载、显存分配污染正式结果。
         // 如果你的 model 有 reset_kv_cache / clear_kv_cache 接口，建议 warmup 后调用。
-        generate<ModelType>(model, sentence, 128, warmup_TTFT, warmup_TPOT, false);
+        generate<ModelType>(model, sentence, 256, warmup_TTFT, warmup_TPOT, false);
     }
 
     std::cout << "Qwen3" << (is_quant_model ? "-AWQ-INT4" : "") << " model generating..." << std::endl;
