@@ -16,7 +16,7 @@
 - 支持 **KV Cache** 与自回归文本生成流程，缓存 KV 加快推理速度
 - 引入 **CUDA 显存池**（大 / 小块分级复用 +  Best-Fit 分配策略），减少频繁分配和释放开销
 - 通过 **mmap 内存映射** 实现 **零拷贝融合算子权重加载** 
-- 实现 Qwen3 模型 Decode 阶段 GQA 实现 **短上下文 (seqlen <= 128) FlashAttention** 和 **长上下文 (seqlen > 128) Split-KV FlashDecoding** 的 dispatch 策略以减少 HBM 访存并且提高 GPU 并行度，端到端性能提升 **7.2%**（9.67ms → 8.97ms）
+- Decode 阶段 GQA 实现 **短上下文 (seqlen <= 128) FlashAttention** 和 **长上下文 (seqlen > 128) Split-KV FlashDecoding** 的 dispatch 策略以减少 HBM 访存并且提高 GPU 并行度，端到端性能提升 **7.2%**（9.67ms → 8.97ms）
 - 实现 Qwen3 模型 **BF16 / FP32 混合精度融合算子** QKV Packed GEMV、QK-Norm + QK-RoPE、GEMV + ResidualAdd、Gate-Up Packed GEMV + SwiGLU、ResidualAdd + RMSNorm
 - BF16 GEMV 融合算子通过 **FP32 乘加减少精度损失**，采用 **bf16x8 向量化访存**，Warp Shuffle 优化 Block 规约，nsys 实测已接近 RTX4090 的显存带宽上限（**92% ~ 98%**），融合后端到端性能提升 **4.0%**（9.35 ms → 8.97ms）
 - 手写 BF16 / FP32 混合精度 GEMV 融合算子 **较 cuBLASLt 实现 1.54x - 1.68x 加速** 
